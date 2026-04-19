@@ -79,6 +79,7 @@ git clone https://github.com/jundot/omlx.git
 cd omlx
 pip install -e .          # Core only
 pip install -e ".[mcp]"   # With MCP (Model Context Protocol) support
+pip install -e ".[image]" # With image generation support (requires mflux)
 ```
 
 Requires macOS 15.0+ (Sequoia), Python 3.10+, and Apple Silicon (M1/M2/M3/M4).
@@ -121,7 +122,7 @@ Logs are written to two locations:
 
 ## Features
 
-Supports text LLMs, vision-language models (VLM), OCR models, embeddings, and rerankers on Apple Silicon.
+Supports text LLMs, vision-language models (VLM), OCR models, embeddings, rerankers, and image generation models on Apple Silicon.
 
 ### Admin Dashboard
 
@@ -134,6 +135,10 @@ Web UI at `/admin` for real-time monitoring, model management, chat, benchmark, 
 ### Vision-Language Models
 
 Run VLMs with the same continuous batching and tiered KV cache stack as text LLMs. Supports multi-image chat, base64/URL/file image inputs, and tool calling with vision context. OCR models (DeepSeek-OCR, DOTS-OCR, GLM-OCR) are auto-detected with optimized prompts.
+
+### Image Generation
+
+Generate images from text prompts (Text-to-Image) or transform existing images (Image-to-Image) using diffusion models via mflux. Supports FLUX.1/FLUX.2, Z-Image, FIBO, SeedVR2, and Qwen Image models with OpenAI-compatible `/v1/images/generations` API.
 
 ### Tiered KV Cache (Hot + Cold)
 
@@ -227,6 +232,7 @@ Drop-in replacement for OpenAI and Anthropic APIs. Supports streaming usage stat
 | `POST /v1/messages` | Anthropic Messages API |
 | `POST /v1/embeddings` | Text embeddings |
 | `POST /v1/rerank` | Document reranking |
+| `POST /v1/images/generations` | Image generation (T2I & I2I) |
 | `GET /v1/models` | List available models |
 
 ### Tool Calling & Structured Output
@@ -268,6 +274,7 @@ Models are auto-detected by type. You can also download models directly from the
 | OCR | DeepSeek-OCR, DOTS-OCR, GLM-OCR |
 | Embedding | BERT, BGE-M3, ModernBERT |
 | Reranker | ModernBERT, XLM-RoBERTa |
+| Image | FLUX.1/FLUX.2, Z-Image, FIBO, SeedVR2, Qwen Image (via [mflux](https://github.com/mflux-ai/mflux)) |
 
 ## CLI Configuration
 

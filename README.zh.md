@@ -79,6 +79,7 @@ git clone https://github.com/jundot/omlx.git
 cd omlx
 pip install -e .          # 仅核心
 pip install -e ".[mcp]"   # 含 MCP（Model Context Protocol）支持
+pip install -e ".[image]" # 含图像生成支持（需要 mflux）
 ```
 
 需要 macOS 15.0+ (Sequoia), Python 3.10+ 和 Apple Silicon（M1/M2/M3/M4）。
@@ -121,7 +122,7 @@ brew services info omlx     # 查看状态
 
 ## 功能
 
-在 Apple Silicon 上支持文本 LLM、视觉语言模型（VLM）、OCR 模型、嵌入模型和重排序模型。
+在 Apple Silicon 上支持文本 LLM、视觉语言模型（VLM）、OCR 模型、嵌入模型、重排序模型和图像生成模型。
 
 ### 管理后台
 
@@ -134,6 +135,10 @@ brew services info omlx     # 查看状态
 ### 视觉语言模型
 
 使用与文本 LLM 相同的连续批处理和分层 KV 缓存堆栈运行 VLM。支持多图聊天、base64/URL/文件图像输入，以及带视觉上下文的工具调用。OCR 模型（DeepSeek-OCR、DOTS-OCR、GLM-OCR）会被自动识别，并使用优化的提示词。
+
+### 图像生成
+
+通过 mflux 使用扩散模型从文本提示生成图像（Text-to-Image）或转换现有图像（Image-to-Image）。支持 FLUX.1/FLUX.2、Z-Image、FIBO、SeedVR2 和 Qwen Image 模型，提供 OpenAI 兼容的 `/v1/images/generations` API。
 
 ### 分层 KV 缓存（热缓存 + 冷缓存）
 
@@ -227,6 +232,7 @@ OpenAI 和 Anthropic API 的直接替代品。支持流式使用统计（`stream
 | `POST /v1/messages` | Anthropic Messages API |
 | `POST /v1/embeddings` | 文本嵌入 |
 | `POST /v1/rerank` | 文档重排序 |
+| `POST /v1/images/generations` | 图像生成（T2I 和 I2I） |
 | `GET /v1/models` | 列出可用模型 |
 
 ### 工具调用与结构化输出
@@ -268,6 +274,7 @@ OpenAI 和 Anthropic API 的直接替代品。支持流式使用统计（`stream
 | OCR | DeepSeek-OCR、DOTS-OCR、GLM-OCR |
 | 嵌入 | BERT、BGE-M3、ModernBERT |
 | 重排序 | ModernBERT、XLM-RoBERTa |
+| 图像 | FLUX.1/FLUX.2、Z-Image、FIBO、SeedVR2、Qwen Image（通过 [mflux](https://github.com/mflux-ai/mflux)） |
 
 ## CLI 配置
 
