@@ -3925,6 +3925,14 @@ def _build_active_models_data() -> dict:
                 active_requests = snapshot.get("active_requests", 0)
                 activities = snapshot.get("activities", [])
 
+        # Image engine: read progress from ImageProgressTracker
+        image_progress = []
+        if model_info.get("engine_type") == "image":
+            from ..image_progress import get_image_progress_tracker
+            img_tracker = get_image_progress_tracker()
+            image_progress = img_tracker.get_model_progress(model_id)
+            active_requests = len(image_progress)
+
         prefilling = tracker.get_model_progress(model_id)
         prefilling_ids = {p["request_id"] for p in prefilling}
 
@@ -4030,6 +4038,7 @@ def _build_active_models_data() -> dict:
             "generating": generating,
             "idle_seconds": idle_seconds,
             "ttl_remaining_seconds": ttl_remaining_seconds,
+            "image_progress": image_progress,
         })
 
         total_active += active_requests

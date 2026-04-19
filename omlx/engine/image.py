@@ -15,7 +15,9 @@ import base64
 import gc
 import io
 import logging
+import os
 import random
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -392,6 +394,20 @@ class ImageEngine(BaseNonStreamingEngine):
         with self._active_lock:
             self._active_count += 1
 
+        # Setup progress callback for dashboard status display
+        from ..image_progress import get_image_progress_tracker
+
+        tracker = get_image_progress_tracker()
+        request_id = str(uuid.uuid4())
+        model_id = os.path.basename(self._model_name.rstrip("/"))
+
+        # Register callback only if model supports it (mflux models have callbacks)
+        callback = None
+        if hasattr(self._model, "callbacks") and self._model.callbacks is not None:
+            from .image_progress_callback import ImageProgressCallback
+            callback = ImageProgressCallback(request_id, model_id, tracker)
+            self._model.callbacks.register(callback)
+
         tmp_path = None
         try:
             # Use random seed if not provided
@@ -417,7 +433,6 @@ class ImageEngine(BaseNonStreamingEngine):
             if image is not None:
                 # Decode base64 image and save to temp file
                 # mflux expects image_path, not direct image
-                import os
                 import tempfile
 
                 from PIL import Image as PILImage
@@ -457,10 +472,20 @@ class ImageEngine(BaseNonStreamingEngine):
             )
 
         finally:
+            # Clean up progress tracker entry (safe to call twice)
+            tracker.remove(request_id)
+            # Clean up callback from model if registered
+            if callback is not None and hasattr(self._model, "callbacks"):
+                cb = self._model.callbacks
+                for attr in ("in_loop", "before_loop", "after_loop"):
+                    try:
+                        getattr(cb, attr).remove(callback)
+                    except (ValueError, AttributeError) as e:
+                        logger.debug("callback cleanup %s: %s", attr, e)
+
             # Clean up I2I temp file
             if tmp_path is not None:
                 try:
-                    import os
                     os.unlink(tmp_path)
                 except OSError:
                     pass
