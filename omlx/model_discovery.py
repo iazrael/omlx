@@ -24,8 +24,8 @@ from typing import Literal
 
 logger = logging.getLogger(__name__)
 
-ModelType = Literal["llm", "vlm", "embedding", "reranker", "audio_stt", "audio_tts", "audio_sts"]
-EngineType = Literal["batched", "vlm", "embedding", "reranker", "audio_stt", "audio_tts", "audio_sts"]
+ModelType = Literal["llm", "vlm", "embedding", "reranker", "audio_stt", "audio_tts", "audio_sts", "image_t2i"]
+EngineType = Literal["batched", "vlm", "embedding", "reranker", "audio_stt", "audio_tts", "audio_sts", "image"]
 
 # Known VLM (Vision-Language Model) types from mlx-vlm
 VLM_MODEL_TYPES = {
@@ -265,6 +265,71 @@ AUDIO_STS_ARCHITECTURES = {
     "LFM2AudioModel",
 }
 
+# ---------------------------------------------------------------------------
+# Image model detection — diffusion models for image generation (mflux)
+# ---------------------------------------------------------------------------
+
+
+def _build_image_detection_sets():
+    """Build image model-type sets from mflux at import time.
+
+    Returns (image_model_types, image_architectures) where image_model_types
+    is a set of model_type strings and image_architectures is a set of
+    architecture strings that should trigger image detection.
+
+    Dynamically reads mflux/models/ directory names so oMLX automatically
+    recognises new image model families when mflux is updated.
+    Falls back to static sets when mflux is not installed.
+    """
+    # Static architectures (stable identifiers)
+    architectures = {
+        "FluxPipeline",
+        "FluxTransformer2DModel",
+        "ZImagePipeline",
+        "FIBOPipeline",
+        "SeedVR2Pipeline",
+    }
+
+    try:
+        from pathlib import Path as _P
+
+        import mflux as _mf
+
+        _base = _P(_mf.__file__).parent / "models"
+
+        if _base.is_dir():
+            # Collect directory names from mflux/models/ (e.g. flux, flux2, z_image)
+            dir_names = {
+                p.name.lower().replace("-", "_")
+                for p in _base.iterdir()
+                if p.is_dir() and not p.name.startswith("_")
+            }
+            # Add common variants (with/without underscores/dots/numbers)
+            expanded = set(dir_names)
+            for name in dir_names:
+                expanded.add(name.replace("_", ""))
+                expanded.add(name.replace("_", "-"))
+                expanded.add(name.replace("_", "."))
+            logger.debug(
+                "Image detection sets loaded from mflux: %d model types",
+                len(expanded),
+            )
+            return expanded, architectures
+    except Exception:
+        logger.debug("mflux not available — using static image detection sets")
+
+    # Static fallback
+    return {
+        "flux", "flux1", "flux_1", "flux2", "flux_2",
+        "z_image", "zimage",
+        "fibo",
+        "seedvr", "seedvr2",
+        "qwen_image",
+    }, architectures
+
+
+IMAGE_MODEL_TYPES, IMAGE_ARCHITECTURES = _build_image_detection_sets()
+
 
 @dataclass
 class DiscoveredModel:
@@ -416,6 +481,62 @@ def _architecture_indicates_causal_lm(architectures: list[str]) -> bool:
     and is handled earlier via :data:`AUDIO_STS_ARCHITECTURES`.
     """
     return any("causallm" in arch.lower() for arch in architectures)
+def _check_image_model_from_config(
+    config: dict,
+    normalized_type: str,
+    model_type: str,
+    model_path: Path,
+) -> bool:
+    """Check if a model is an image generation model based on config and path.
+
+    Performs multiple checks in order of reliability:
+    1. Architecture field (list)
+    2. Architecture field (singular - mflux format)
+    3. model_type field
+    4. Prefix matching for mflux variants
+    5. Directory name heuristics with structural checks
+
+    Args:
+        config: Parsed config.json dict
+        normalized_type: Normalized model_type string
+        model_type: Raw model_type string
+        model_path: Path to model directory
+
+    Returns:
+        True if the model is an image generation model, False otherwise
+    """
+    architectures = config.get("architectures", [])
+
+    # Architecture check (list) - most reliable
+    for arch in architectures:
+        if arch in IMAGE_ARCHITECTURES:
+            return True
+
+    # mflux-format config.json uses singular "architecture" field (string)
+    # instead of "architectures" (list)
+    arch_str = config.get("architecture", "")
+    if arch_str and arch_str in IMAGE_ARCHITECTURES:
+        return True
+
+    # model_type check
+    if normalized_type in IMAGE_MODEL_TYPES or model_type in IMAGE_MODEL_TYPES:
+        return True
+
+    # Prefix matching for mflux variants (e.g., "flux2-klein-4b" → "flux2")
+    if any(normalized_type.startswith(t) for t in ("flux2_", "flux_", "z_image_", "zimage_")):
+        return True
+
+    # Heuristic: model directory name suggests image generation
+    name_lower = model_path.name.lower()
+    if any(hint in name_lower for hint in ["flux", "z-image", "zimage", "fibo", "seedvr"]):
+        # Additional check: image models typically have unet or vae configs
+        if (model_path / "unet").exists() or (model_path / "vae").exists():
+            return True
+        # Or scheduler config (common in diffusers-format models)
+        if (model_path / "scheduler").exists():
+            return True
+
+    return False
 
 
 def detect_model_type(model_path: Path) -> ModelType:
@@ -432,14 +553,34 @@ def detect_model_type(model_path: Path) -> ModelType:
        presence (``vision_config`` / ``vit_config`` / non-empty
        ``mm_vision_tower`` — see :func:`_has_vision_subconfig`)
     7. Audio model detection (STT/TTS/STS)
+    8. Image generation model detection (T2I)
 
     Args:
         model_path: Path to model directory
 
     Returns:
-        Model type: "llm", "vlm", "embedding", "reranker", "audio_stt", "audio_tts", or "audio_sts"
+        Model type: "llm", "vlm", "embedding", "reranker", "audio_stt", "audio_tts", "audio_sts", or "image_t2i"
     """
     config_path = model_path / "config.json"
+
+    # Diffusers-style image models (Flux, etc.) have no top-level config.json
+    # Check for characteristic directory structure first
+    if _is_diffusers_image_dir(model_path):
+        return "image_t2i"
+
+    # model_index.json is a diffusers-format signature file.
+    # Check _class_name to confirm it's an image pipeline (not e.g. depth estimation).
+    class_name = _get_diffusers_class_name(model_path)
+    if class_name:
+        # Known image pipeline class names from mflux and diffusers
+        if any(kw in class_name for kw in ("pipeline", "flux", "zimage", "z_image", "fibo", "seedvr")):
+            return "image_t2i"
+
+    # Directory name heuristic for image models without config.json
+    name_lower = model_path.name.lower()
+    if any(hint in name_lower for hint in ["flux", "z-image", "zimage", "fibo", "seedvr"]):
+        return "image_t2i"
+
     if not config_path.exists():
         return "llm"
 
@@ -576,6 +717,10 @@ def detect_model_type(model_path: Path) -> ModelType:
         if _architecture_indicates_causal_lm(architectures):
             return "llm"
         return "audio_sts"
+
+    # Check for image generation models (diffusion models via mflux)
+    if _check_image_model_from_config(config, normalized_type, model_type, model_path):
+        return "image_t2i"
 
     return "llm"
 
@@ -769,6 +914,10 @@ def estimate_model_size(model_path: Path) -> int:
             total_size += f.stat().st_size
 
     if total_size == 0:
+        logger.warning(
+            f"No model weights found in {model_path} — "
+            "model may be incompletely downloaded"
+        )
         raise ValueError(f"No model weights found in {model_path}")
 
     # Add overhead for runtime buffers (~5%)
@@ -782,9 +931,69 @@ def _is_adapter_dir(path: Path) -> bool:
     return (path / "adapter_config.json").exists()
 
 
+def _is_diffusers_image_dir(path: Path) -> bool:
+    """Check if a directory is a diffusers-style image model (no top-level config.json).
+
+    mflux/Flux models use a diffusers-style structure:
+        model_dir/
+        ├── transformer/    (contains .safetensors weights)
+        ├── vae/
+        ├── text_encoder/
+        ├── text_encoder_2/
+        ├── tokenizer/
+        └── tokenizer_2/
+
+    These have no top-level config.json, but have characteristic subdirectories.
+    """
+    # Check for characteristic diffusers-style subdirectories
+    has_transformer = (path / "transformer").is_dir()
+    has_vae = (path / "vae").is_dir()
+
+    # Flux models also have dual text encoders
+    has_text_encoder = (path / "text_encoder").is_dir() or (path / "text_encoder_2").is_dir()
+
+    # Must have transformer and at least one of vae/text_encoder
+    return has_transformer and (has_vae or has_text_encoder)
+
+
+def _get_diffusers_class_name(model_path: Path) -> str | None:
+    """Extract the _class_name from model_index.json if present.
+
+    Args:
+        model_path: Path to model directory
+
+    Returns:
+        The _class_name value converted to lowercase, or None if not found
+    """
+    index_path = model_path / "model_index.json"
+    if not index_path.exists():
+        return None
+    try:
+        with open(index_path) as f:
+            index = json.load(f)
+        return index.get("_class_name", "").lower()
+    except (json.JSONDecodeError, IOError):
+        return None
+
+
 def _is_model_dir(path: Path) -> bool:
-    """Check if a directory contains a valid model (has config.json)."""
-    return (path / "config.json").exists() and not _is_adapter_dir(path)
+    """Check if a directory contains a valid model.
+
+    Supports:
+    - Standard models: has config.json
+    - Diffusers-style image models: transformer/ + vae/ or text_encoder/
+    - Diffusers models (incomplete download): has model_index.json with pipeline class
+    - Not a LoRA adapter: no adapter_config.json
+    """
+    if _is_adapter_dir(path):
+        return False
+    if (path / "config.json").exists() or _is_diffusers_image_dir(path):
+        return True
+    # model_index.json with a pipeline class indicates a diffusers model
+    class_name = _get_diffusers_class_name(path)
+    if class_name and "pipeline" in class_name:
+        return True
+    return False
 
 
 def model_directory_access_error(path: Path) -> str | None:
@@ -958,6 +1167,8 @@ def _register_model(
             engine_type = "audio_tts"
         elif model_type == "audio_sts":
             engine_type = "audio_sts"
+        elif model_type == "image_t2i":
+            engine_type = "image"
         else:
             engine_type = "batched"
         estimated_size = estimate_model_size(model_dir)

@@ -139,6 +139,11 @@ bundle = [
     # [audio] extra on top of pyproject's plain mistral-common>=1.10
     "mistral-common[audio]>=1.10",
 ]
+image = [
+    # mflux for image generation (Text-to-Image, Image-to-Image)
+    # Supports: FLUX.1, FLUX.2, Z-Image, FIBO, SeedVR2, Qwen Image
+    "mflux>=0.17.0",
+]
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",

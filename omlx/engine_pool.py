@@ -27,6 +27,7 @@ import mlx.core as mx
 
 from .engine import BaseEngine, BatchedEngine
 from .engine.embedding import EmbeddingEngine
+from .engine.image import ImageEngine
 from .engine.reranker import RerankerEngine
 from .engine.stt import STTEngine
 from .engine.sts import STSEngine
@@ -53,8 +54,8 @@ class EngineEntry:
 
     model_id: str  # Directory name (e.g., "llama-3b")
     model_path: str  # Full path to model directory
-    model_type: Literal["llm", "vlm", "embedding", "reranker", "audio_stt", "audio_tts", "audio_sts"]  # Model type
-    engine_type: Literal["batched", "simple", "embedding", "reranker", "vlm", "audio_stt", "audio_tts", "audio_sts"]  # Engine type to use
+    model_type: Literal["llm", "vlm", "embedding", "reranker", "audio_stt", "audio_tts", "audio_sts", "image_t2i"]  # Model type
+    engine_type: Literal["batched", "simple", "embedding", "reranker", "vlm", "audio_stt", "audio_tts", "audio_sts", "image"]  # Engine type to use
     estimated_size: int  # Pre-calculated from safetensors (bytes)
     actual_size: int | None = None  # Observed process-memory delta after load settles
     config_model_type: str = ""  # Raw model_type from config.json (e.g., "deepseekocr_2")
@@ -64,6 +65,7 @@ class EngineEntry:
     source_type: str = "local"
     source_repo_id: str | None = None
     engine: BaseEngine | EmbeddingEngine | RerankerEngine | STTEngine | STSEngine | TTSEngine | None = None  # Loaded engine instance
+    engine: BaseEngine | EmbeddingEngine | RerankerEngine | STTEngine | STSEngine | TTSEngine | ImageEngine | None = None  # Loaded engine instance
     last_access: float = 0.0  # Timestamp for LRU (0 if never loaded)
     is_loading: bool = False  # Prevent concurrent loads
     loading_started_at: float | None = None  # Timestamp when current load started
@@ -227,6 +229,7 @@ class EnginePool:
         "audio_stt": "audio_stt",
         "audio_tts": "audio_tts",
         "audio_sts": "audio_sts",
+        "image_t2i": "image",
     }
 
     def apply_settings_overrides(
@@ -325,7 +328,7 @@ class EnginePool:
 
     async def get_engine(
         self, model_id: str, force_lm: bool = False,
-    ) -> BaseEngine | EmbeddingEngine | RerankerEngine | STTEngine | STSEngine | TTSEngine:
+    ) -> BaseEngine | EmbeddingEngine | RerankerEngine | STTEngine | STSEngine | TTSEngine | ImageEngine:
         """
         Get or load engine for the specified model.
 
@@ -384,6 +387,33 @@ class EnginePool:
                         break
                     victim = self._find_lru_victim()
                     if victim is not None:
+            # Check if model is too large for memory limit
+            if (
+                self._max_model_memory is not None
+                and entry.estimated_size > self._max_model_memory
+            ):
+                raise ModelTooLargeError(
+                    model_id, entry.estimated_size, self._max_model_memory
+                )
+
+            # Pre-load eviction: reserve 25% extra for KV cache headroom
+            # so other models get evicted earlier, leaving room for context.
+            # Always try to evict with headroom first. If all evictable models
+            # are gone and the model still fits without headroom, allow it.
+            # Skip entirely when model memory limit is disabled (None).
+            # Audio engines (STT/TTS) and Image engines don't use KV cache, so headroom is 0.
+            if self._max_model_memory is not None:
+                if entry.engine_type in ("audio_stt", "audio_tts", "audio_sts", "image"):
+                    kv_headroom = 0
+                else:
+                    kv_headroom = int(entry.estimated_size * 0.25)
+                required_with_headroom = entry.estimated_size + kv_headroom
+                try:
+                    await self._ensure_memory_available(required_with_headroom)
+                except InsufficientMemoryError:
+                    # Can't fit with headroom even after evicting everything possible.
+                    # Fall back to weights-only if that fits.
+                    if self._current_model_memory + entry.estimated_size <= self._max_model_memory:
                         logger.info(
                             f"Evicting '{victim}' to fit '{model_id}' "
                             f"under memory ceiling "
@@ -691,6 +721,12 @@ class EnginePool:
                     engine = TTSEngine(model_name=entry.model_path)
                 elif entry.engine_type == "audio_sts":
                     engine = STSEngine(
+                        model_name=entry.model_path,
+                        config_model_type=entry.config_model_type,
+                    )
+                elif entry.engine_type == "image":
+                    # ImageEngine for image generation (T2I/I2I)
+                    engine = ImageEngine(
                         model_name=entry.model_path,
                         config_model_type=entry.config_model_type,
                     )
