@@ -539,6 +539,67 @@ def _check_image_model_from_config(
     return False
 
 
+def _detect_image_model_type(model_path: Path) -> ModelType | None:
+    """Detect if a model is an image generation model.
+
+    Priority:
+    1. Directory name contains known image model hints
+    2. config.json or model_config.json has image model indicators
+    3. All four required directories exist: text_encoder, tokenizer, transformer, vae
+    4. model_index.json has pipeline class name
+
+    Returns:
+        "image_t2i" if detected as image model, None otherwise
+    """
+    # 1. Check directory name first (highest priority)
+    name_lower = model_path.name.lower()
+    if any(hint in name_lower for hint in ["flux", "z-image", "zimage", "fibo", "seedvr", "qwen-image"]):
+        return "image_t2i"
+
+    # 2. Check config.json or model_config.json for image model indicators
+    config_path = model_path / "config.json"
+    model_config_path = model_path / "model_config.json"
+
+    config = None
+    for cfg_path in (config_path, model_config_path):
+        if cfg_path.exists():
+            try:
+                with open(cfg_path) as f:
+                    config = json.load(f)
+                break
+            except (json.JSONDecodeError, IOError):
+                pass
+
+    if config is not None:
+        # Check model_type and architecture fields
+        model_type = config.get("model_type", "")
+        normalized_type = model_type.lower().replace("-", "_").replace(".", "_")
+        architecture = config.get("architecture", "")
+        architectures = config.get("architectures", [])
+
+        # Check against known image model types and architectures
+        if normalized_type in IMAGE_MODEL_TYPES or model_type in IMAGE_MODEL_TYPES:
+            return "image_t2i"
+        if architecture and architecture in IMAGE_ARCHITECTURES:
+            return "image_t2i"
+        for arch in architectures:
+            if arch in IMAGE_ARCHITECTURES:
+                return "image_t2i"
+
+    # 3. Check for characteristic directory structure as fallback
+    # Image models have: text_encoder, tokenizer, transformer, vae
+    if _is_diffusers_image_dir_full(model_path):
+        return "image_t2i"
+
+    # 4. model_index.json check (diffusers-format signature file)
+    class_name = _get_diffusers_class_name(model_path)
+    if class_name:
+        if any(kw in class_name for kw in ("pipeline", "flux", "zimage", "z_image", "fibo", "seedvr")):
+            return "image_t2i"
+
+    return None
+
+
 def detect_model_type(model_path: Path) -> ModelType:
     """
     Detect model type from config.json.
@@ -561,26 +622,15 @@ def detect_model_type(model_path: Path) -> ModelType:
     Returns:
         Model type: "llm", "vlm", "embedding", "reranker", "audio_stt", "audio_tts", "audio_sts", or "image_t2i"
     """
+    # ---------------------------------------------------------------------------
+    # Image model detection (priority: filename > config.json > directory check)
+    # ---------------------------------------------------------------------------
+    image_type = _detect_image_model_type(model_path)
+    if image_type is not None:
+        return image_type
+
+    # Not an image model - continue with other type detection
     config_path = model_path / "config.json"
-
-    # Diffusers-style image models (Flux, etc.) have no top-level config.json
-    # Check for characteristic directory structure first
-    if _is_diffusers_image_dir(model_path):
-        return "image_t2i"
-
-    # model_index.json is a diffusers-format signature file.
-    # Check _class_name to confirm it's an image pipeline (not e.g. depth estimation).
-    class_name = _get_diffusers_class_name(model_path)
-    if class_name:
-        # Known image pipeline class names from mflux and diffusers
-        if any(kw in class_name for kw in ("pipeline", "flux", "zimage", "z_image", "fibo", "seedvr")):
-            return "image_t2i"
-
-    # Directory name heuristic for image models without config.json
-    name_lower = model_path.name.lower()
-    if any(hint in name_lower for hint in ["flux", "z-image", "zimage", "fibo", "seedvr"]):
-        return "image_t2i"
-
     if not config_path.exists():
         return "llm"
 
@@ -954,6 +1004,20 @@ def _is_diffusers_image_dir(path: Path) -> bool:
 
     # Must have transformer and at least one of vae/text_encoder
     return has_transformer and (has_vae or has_text_encoder)
+
+
+def _is_diffusers_image_dir_full(path: Path) -> bool:
+    """Check if a directory has all four required image model directories.
+
+    Required directories: text_encoder, tokenizer, transformer, vae.
+    This is a stricter check for image generation models.
+    """
+    has_text_encoder = (path / "text_encoder").is_dir()
+    has_tokenizer = (path / "tokenizer").is_dir()
+    has_transformer = (path / "transformer").is_dir()
+    has_vae = (path / "vae").is_dir()
+
+    return has_text_encoder and has_tokenizer and has_transformer and has_vae
 
 
 def _get_diffusers_class_name(model_path: Path) -> str | None:

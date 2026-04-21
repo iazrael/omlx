@@ -44,8 +44,13 @@ class ImageRequest(BaseModel):
     n: int = Field(default=1, ge=1, le=4)
     """The number of images to generate. Must be between 1 and 4. Default is 1."""
 
-    size: Literal["256x256", "512x512", "1024x1024", "1792x1024", "1024x1792"] = "1024x1024"
-    """The size of the generated images. Default is 1024x1024."""
+    size: str = "1024x1024"
+    """
+    The size of the generated images in format 'WxH' (e.g., '1024x1024').
+
+    Suggested sizes: '256x256', '512x512', '1024x1024', '1792x1024', '1024x1792', '720x1280'.
+    Actual supported sizes depend on the model. API caller determines the resolution.
+    """
 
     quality: Literal["standard", "hd"] = "standard"
     """The quality of the generated image. 'hd' uses more inference steps."""
@@ -77,6 +82,23 @@ class ImageRequest(BaseModel):
 
     strength: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     """Strength of transformation for I2I (0.0-1.0). Higher = more change."""
+
+    @field_validator("size")
+    @classmethod
+    def validate_size(cls, v: str) -> str:
+        """Validate that size is in format 'WxH' with positive integers."""
+        if not isinstance(v, str):
+            raise ValueError("size must be a string in format 'WxH'")
+        parts = v.split("x")
+        if len(parts) != 2:
+            raise ValueError("size must be in format 'WxH' (e.g., '1024x1024')")
+        try:
+            width, height = int(parts[0]), int(parts[1])
+        except ValueError:
+            raise ValueError("size dimensions must be integers")
+        if width <= 0 or height <= 0:
+            raise ValueError("size dimensions must be positive")
+        return v
 
     @field_validator("image")
     @classmethod

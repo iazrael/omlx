@@ -20,6 +20,7 @@ from io import BytesIO
 # API configuration
 API_BASE = "http://localhost:8888/v1"
 MODEL_ID = "FLUX.2-klein-4B-mflux-4bit"
+MODEL_ID = "FLUX.2-klein-9B-MLX-Q4"
 
 
 def generate_image(

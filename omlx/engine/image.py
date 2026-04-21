@@ -291,6 +291,46 @@ class ImageEngine(BaseNonStreamingEngine):
             if local_path.is_dir():
                 # Local model directory - pass as model_path
                 init_kwargs["model_path"] = self._model_name
+
+                # Detect model variant from config.json or directory name
+                # and pass correct ModelConfig
+                try:
+                    from mflux.models.common.config.model_config import ModelConfig
+
+                    # Check config.json for model_type
+                    config_path = local_path / "config.json"
+                    base_model = None
+
+                    if config_path.exists():
+                        import json
+                        with open(config_path) as f:
+                            cfg = json.load(f)
+                        model_type = cfg.get("model_type", "").lower()
+                        # Map model_type to ModelConfig alias
+                        if "flux2-klein-9b" in model_type or "9b" in model_type:
+                            base_model = "flux2-klein-9b"
+                        elif "flux2-klein-4b" in model_type or "4b" in model_type:
+                            base_model = "flux2-klein-4b"
+
+                    # Fallback: detect from directory name
+                    if base_model is None:
+                        name_lower = local_path.name.lower()
+                        if "9b" in name_lower or "klein-9" in name_lower:
+                            base_model = "flux2-klein-9b"
+                        elif "4b" in name_lower or "klein-4" in name_lower:
+                            base_model = "flux2-klein-4b"
+                        elif "flux2" in name_lower or "flux.2" in name_lower:
+                            base_model = "flux2-klein-4b"  # Default to 4B
+
+                    if base_model:
+                        model_config = ModelConfig.from_name(
+                            model_name=base_model,
+                        )
+                        init_kwargs["model_config"] = model_config
+                        logger.info(f"Using ModelConfig for {base_model}")
+                except Exception as e:
+                    logger.warning(f"Failed to detect model variant: {e}, using default config")
+
             elif "/" in self._model_name:
                 # HuggingFace repo name (e.g., "mlx-community/Flux-1.lite-8B-MLX-Q4")
                 # Try to get base_model from HuggingFace metadata

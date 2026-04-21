@@ -74,17 +74,43 @@ class TestImageRequest:
             )
 
     def test_invalid_size(self):
-        """Test size validation."""
+        """Test size validation - invalid formats."""
+        # Invalid: not in WxH format
         with pytest.raises(ValidationError):
             ImageRequest(
                 model="flux.1-schnell",
                 prompt="test",
-                size="999x999",  # Invalid size
+                size="1024",  # Missing height
+            )
+
+        # Invalid: non-numeric
+        with pytest.raises(ValidationError):
+            ImageRequest(
+                model="flux.1-schnell",
+                prompt="test",
+                size="abcxdef",  # Non-numeric
+            )
+
+        # Invalid: negative dimension
+        with pytest.raises(ValidationError):
+            ImageRequest(
+                model="flux.1-schnell",
+                prompt="test",
+                size="-100x100",  # Negative width
             )
 
     def test_valid_sizes(self):
-        """Test all valid sizes."""
-        valid_sizes = ["256x256", "512x512", "1024x1024", "1792x1024", "1024x1792"]
+        """Test various valid sizes - caller determines resolution."""
+        valid_sizes = [
+            "256x256",
+            "512x512",
+            "1024x1024",
+            "1792x1024",
+            "1024x1792",
+            "720x1280",  # New suggested size
+            "999x999",   # Custom size allowed
+            "128x128",   # Small size allowed
+        ]
 
         for size in valid_sizes:
             request = ImageRequest(
@@ -103,7 +129,8 @@ class TestImageRequest:
             strength=0.8,
         )
 
-        assert request.image == "data:image/png;base64,abc123"
+        # Note: image validator strips data URI prefix
+        assert request.image == "abc123"
         assert request.strength == 0.8
 
     def test_strength_validation(self):
