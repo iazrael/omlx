@@ -108,6 +108,7 @@ class ServerSettings:
     cors_origins: list[str] = field(default_factory=lambda: ["*"])
     server_aliases: list[str] = field(default_factory=list)
     sse_keepalive_mode: str = "chunk"
+    auto_start_on_launch: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -123,6 +124,7 @@ class ServerSettings:
             cors_origins=data.get("cors_origins", ["*"]),
             server_aliases=data.get("server_aliases", []),
             sse_keepalive_mode=data.get("sse_keepalive_mode", "chunk"),
+            auto_start_on_launch=data.get("auto_start_on_launch", True),
         )
 
 
@@ -275,12 +277,16 @@ class CacheSettings:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CacheSettings:
         """Create from dictionary."""
+        hot_cache_max_size = data.get("hot_cache_max_size", "0")
+        if isinstance(hot_cache_max_size, str) and hot_cache_max_size.lower() == "auto":
+            hot_cache_max_size = "0"
+
         return cls(
             enabled=data.get("enabled", True),
             hot_cache_only=data.get("hot_cache_only", False),
             ssd_cache_dir=data.get("ssd_cache_dir"),
             ssd_cache_max_size=data.get("ssd_cache_max_size", "auto"),
-            hot_cache_max_size=data.get("hot_cache_max_size", "0"),
+            hot_cache_max_size=hot_cache_max_size,
             initial_cache_blocks=data.get("initial_cache_blocks", 256),
         )
 
@@ -293,7 +299,9 @@ VALID_MEMORY_GUARD_TIERS: set[str] = {"safe", "balanced", "aggressive", "custom"
 class MemorySettings:
     """Process-level memory enforcement settings."""
 
-    prefill_memory_guard: bool = True  # Memory guard: prefill estimation + generation scheduling defer
+    prefill_memory_guard: bool = (
+        True  # Memory guard: prefill estimation + generation scheduling defer
+    )
     # Tier selects the active-memory reclaim ratio (safe/balanced/aggressive)
     # or, for "custom", lets the user pin the dynamic ceiling to a fixed
     # GB number. See ProcessMemoryEnforcer._get_dynamic_ceiling for the math.
@@ -337,12 +345,8 @@ class MemorySettings:
             ),
             soft_threshold=float(data.get("soft_threshold", 0.85)),
             hard_threshold=float(data.get("hard_threshold", 0.95)),
-            prefill_safe_zone_ratio=float(
-                data.get("prefill_safe_zone_ratio", 0.80)
-            ),
-            prefill_min_chunk_tokens=int(
-                data.get("prefill_min_chunk_tokens", 32)
-            ),
+            prefill_safe_zone_ratio=float(data.get("prefill_safe_zone_ratio", 0.80)),
+            prefill_min_chunk_tokens=int(data.get("prefill_min_chunk_tokens", 32)),
         )
 
 
@@ -415,9 +419,7 @@ class AuthSettings:
             api_key=data.get("api_key"),
             secret_key=data.get("secret_key"),
             skip_api_key_verification=data.get("skip_api_key_verification", False),
-            sub_keys=[
-                SubKeyEntry.from_dict(sk) for sk in data.get("sub_keys", [])
-            ],
+            sub_keys=[SubKeyEntry.from_dict(sk) for sk in data.get("sub_keys", [])],
         )
 
 
@@ -632,7 +634,7 @@ class ClaudeCodeSettings:
 
 @dataclass
 class IntegrationSettings:
-    """Other integrations settings (Codex, OpenCode, OpenClaw, Hermes, Pi, Copilot)."""
+    """Other integrations settings."""
 
     codex_model: str | None = None
     opencode_model: str | None = None
@@ -641,6 +643,10 @@ class IntegrationSettings:
     pi_model: str | None = None
     copilot_model: str | None = None
     openclaw_tools_profile: str = "coding"
+    markitdown_enabled: bool = True
+    markitdown_expose_model: bool = True
+    markitdown_max_file_size_mb: int = 25
+    markitdown_max_files_per_request: int = 5
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -652,6 +658,10 @@ class IntegrationSettings:
             "pi_model": self.pi_model,
             "copilot_model": self.copilot_model,
             "openclaw_tools_profile": self.openclaw_tools_profile,
+            "markitdown_enabled": self.markitdown_enabled,
+            "markitdown_expose_model": self.markitdown_expose_model,
+            "markitdown_max_file_size_mb": self.markitdown_max_file_size_mb,
+            "markitdown_max_files_per_request": self.markitdown_max_files_per_request,
         }
 
     @classmethod
@@ -665,6 +675,12 @@ class IntegrationSettings:
             pi_model=data.get("pi_model"),
             copilot_model=data.get("copilot_model"),
             openclaw_tools_profile=data.get("openclaw_tools_profile", "coding"),
+            markitdown_enabled=data.get("markitdown_enabled", True),
+            markitdown_expose_model=data.get("markitdown_expose_model", True),
+            markitdown_max_file_size_mb=data.get("markitdown_max_file_size_mb", 25),
+            markitdown_max_files_per_request=data.get(
+                "markitdown_max_files_per_request", 5
+            ),
         )
 
 
@@ -696,7 +712,9 @@ class GlobalSettings:
     claude_code: ClaudeCodeSettings = field(default_factory=ClaudeCodeSettings)
     integrations: IntegrationSettings = field(default_factory=IntegrationSettings)
     ui: UISettings = field(default_factory=UISettings)
-    idle_timeout: ModelIdleTimeoutSettings = field(default_factory=ModelIdleTimeoutSettings)
+    idle_timeout: ModelIdleTimeoutSettings = field(
+        default_factory=ModelIdleTimeoutSettings
+    )
 
     @classmethod
     def load(
@@ -785,13 +803,13 @@ class GlobalSettings:
             if "claude_code" in data:
                 self.claude_code = ClaudeCodeSettings.from_dict(data["claude_code"])
             if "integrations" in data:
-                self.integrations = IntegrationSettings.from_dict(
-                    data["integrations"]
-                )
+                self.integrations = IntegrationSettings.from_dict(data["integrations"])
             if "ui" in data:
                 self.ui = UISettings.from_dict(data["ui"])
             if "idle_timeout" in data:
-                self.idle_timeout = ModelIdleTimeoutSettings.from_dict(data["idle_timeout"])
+                self.idle_timeout = ModelIdleTimeoutSettings.from_dict(
+                    data["idle_timeout"]
+                )
 
         except json.JSONDecodeError as e:
             logger.warning(f"Failed to parse settings file {path}: {e}")
@@ -864,9 +882,12 @@ class GlobalSettings:
         if hf_endpoint := os.getenv("OMLX_HF_ENDPOINT"):
             self.huggingface.endpoint = hf_endpoint
         if hf_cache_enabled := os.getenv("OMLX_HF_CACHE_ENABLED"):
-            self.huggingface.hf_cache_enabled = (
-                hf_cache_enabled.strip().lower() in {"1", "true", "yes", "on"}
-            )
+            self.huggingface.hf_cache_enabled = hf_cache_enabled.strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
 
         # ModelScope settings
         if ms_endpoint := os.getenv("OMLX_MS_ENDPOINT"):
@@ -890,6 +911,17 @@ class GlobalSettings:
                 self.logging.retention_days = int(retention_days)
             except ValueError:
                 logger.warning(f"Invalid OMLX_LOG_RETENTION_DAYS: {retention_days}")
+
+        # Integration settings
+        if markitdown_enabled := os.getenv("OMLX_MARKITDOWN_ENABLED"):
+            self.integrations.markitdown_enabled = (
+                markitdown_enabled.strip().lower() in {"1", "true", "yes", "on"}
+            )
+        if markitdown_expose_model := os.getenv("OMLX_MARKITDOWN_EXPOSE_MODEL"):
+            self.integrations.markitdown_expose_model = (
+                markitdown_expose_model.strip().lower()
+                in {"1", "true", "yes", "on"}
+            )
 
     def _apply_cli_overrides(self, args: Any) -> None:
         """
@@ -981,7 +1013,9 @@ class GlobalSettings:
             return (Path(hf_home).expanduser() / "hub").resolve()
         return (Path.home() / ".cache" / "huggingface" / "hub").resolve()
 
-    def get_effective_model_dirs(self, model_dirs: list[str] | None = None) -> list[Path]:
+    def get_effective_model_dirs(
+        self, model_dirs: list[str] | None = None
+    ) -> list[Path]:
         """Return model directories in discovery order, including HF cache."""
         if model_dirs is None:
             configured = self.model.get_model_dirs(self.base_path)
@@ -1098,9 +1132,7 @@ class GlobalSettings:
 
         # Server validation
         if not 1 <= self.server.port <= 65535:
-            errors.append(
-                f"Invalid port: {self.server.port} (must be 1-65535)"
-            )
+            errors.append(f"Invalid port: {self.server.port} (must be 1-65535)")
 
         valid_log_levels = {"trace", "debug", "info", "warning", "error", "critical"}
         if self.server.log_level.lower() not in valid_log_levels:
@@ -1165,6 +1197,19 @@ class GlobalSettings:
             except ValueError as e:
                 errors.append(f"Invalid ssd_cache_max_size: {e}")
 
+        try:
+            hot_cache_size = parse_size(self.cache.hot_cache_max_size)
+            if hot_cache_size < 0:
+                errors.append("hot_cache_max_size must be non-negative")
+        except ValueError as e:
+            if self.cache.hot_cache_max_size.strip().lower() == "auto":
+                errors.append(
+                    "Invalid hot_cache_max_size: 'auto' is not supported; "
+                    "use '0' to disable or a size like '8GB'"
+                )
+            else:
+                errors.append(f"Invalid hot_cache_max_size: {e}")
+
         if self.cache.initial_cache_blocks <= 0:
             errors.append(
                 f"Invalid initial_cache_blocks: "
@@ -1202,6 +1247,12 @@ class GlobalSettings:
                 f"Invalid claude_code mode: '{self.claude_code.mode}' "
                 f"(must be one of {sorted(valid_modes)})"
             )
+
+        # Integration validation
+        if self.integrations.markitdown_max_file_size_mb <= 0:
+            errors.append("markitdown_max_file_size_mb must be > 0")
+        if self.integrations.markitdown_max_files_per_request <= 0:
+            errors.append("markitdown_max_files_per_request must be > 0")
 
         # HuggingFace validation
         if self.huggingface.endpoint:
@@ -1251,7 +1302,9 @@ class GlobalSettings:
         # Always resolve ssd_dir so the scheduler can initialize PagedSSDCacheManager.
         # When hot_cache_only=True, PagedSSDCacheManager skips directory init and
         # the writer thread internally — the dir is not used for disk I/O.
-        ssd_dir = self.cache.get_ssd_cache_dir(self.base_path) if self.cache.enabled else None
+        ssd_dir = (
+            self.cache.get_ssd_cache_dir(self.base_path) if self.cache.enabled else None
+        )
 
         return SchedulerConfig(
             max_num_seqs=self.scheduler.max_concurrent_requests,
@@ -1261,7 +1314,9 @@ class GlobalSettings:
             initial_cache_blocks=self.cache.initial_cache_blocks,
             paged_ssd_cache_dir=str(ssd_dir) if ssd_dir else None,
             hot_cache_only=self.cache.hot_cache_only,
-            paged_ssd_cache_max_size=self.cache.get_ssd_cache_max_size_bytes(self.base_path),
+            paged_ssd_cache_max_size=self.cache.get_ssd_cache_max_size_bytes(
+                self.base_path
+            ),
             hot_cache_max_size=self.cache.get_hot_cache_max_size_bytes(),
         )
 
@@ -1305,9 +1360,7 @@ def get_settings() -> GlobalSettings:
     """
     global _global_settings
     if _global_settings is None:
-        raise RuntimeError(
-            "Settings not initialized. Call init_settings() first."
-        )
+        raise RuntimeError("Settings not initialized. Call init_settings() first.")
     return _global_settings
 
 
